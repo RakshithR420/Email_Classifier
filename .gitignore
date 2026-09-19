@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+.env
+auth/credentials.json
+auth/token.pickle
+*.egg-info/
+.vscode/
+
+# Real personal inbox data — contains actual contact names/emails, do not publish
+eval/data/personal_test.csv
+eval/data/personal_predictions.csv
+
+# Large raw dataset — too big for git, document download instructions in README instead
+eval/data/Phishing_Email.csv

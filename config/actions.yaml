@@ -1,0 +1,45 @@
+Phishing:
+  action: "label"
+  label: "AI/Phishing-Review"
+
+Job Search:
+  action: "label"
+  label: "AI/Job Search"
+
+Applications:
+  action: "label"
+  label: "AI/Applications"
+
+Orders:
+  action: "label"
+  label: "AI/Orders"
+
+Subscriptions:
+  action: "label"
+  label: "AI/Subscriptions"
+
+Personal:
+  action: "none"
+
+Finance:
+  action: "label"
+  label: "AI/Finance"
+
+Promotions:
+  action: "archive"
+  label: "AI/Promotions"
+
+Other:
+  action: "none"
+
+Job Result:
+  action: "label"
+  label: "AI/Job Result"
+
+Social Media:
+  action: "label"
+  label: "AI/Social Media"
+
+OTP:
+  action: "label"
+  label: "AI/OTP"
