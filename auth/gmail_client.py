@@ -1,93 +1,181 @@
 import base64
+import html as html_lib
 import re
 import time
 
 from googleapiclient.errors import HttpError
 
+# Gmail rate-limit errors we should retry on (the rest are raised immediately).
+_RETRYABLE_REASONS = ("rateLimitExceeded", "userRateLimitExceeded", "backendError")
+
+_label_id_cache = {}
+
+
+# ---------------------------------------------------------------------------
+# Parsing helpers
+# ---------------------------------------------------------------------------
+
 def _get_header(headers, name):
-    """Helper function to extract a specific header value from the Gmail API response."""
+    """Returns the value of header `name` (case-insensitive), or "" if missing."""
     for header in headers:
         if header["name"].lower() == name.lower():
             return header["value"]
     return ""
 
-def _decode(data):
-    """Helper function to decode base64url-encoded data from the Gmail API."""
-    return base64.urlsafe_b64decode(data).decode("utf-8")
 
-def _strip_html(html):
-    """Helper function to remove HTML tags from a string."""
-    return re.sub(r"<[^>]+>", "", html)
+def _decode(data):
+    """Decodes base64url data from the Gmail API. Tolerates missing padding and
+    non-UTF-8 bytes (common in marketing mail) instead of crashing."""
+    if not data:
+        return ""
+    padded = data + "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
+
+
+def _strip_html(raw_html):
+    """Turns an HTML email into readable plain text."""
+    text = re.sub(r"(?is)<(script|style|head)[^>]*>.*?</\1>", " ", raw_html)
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    return text.strip()
+
+
+def _collect_parts(payload, plain, html):
+    """Walks a (possibly nested) MIME tree and collects text/plain and
+    text/html bodies. Real emails often nest multipart/alternative inside
+    multipart/mixed, so a single level of `parts` is not enough."""
+    mime = payload.get("mimeType", "")
+    data = payload.get("body", {}).get("data")
+
+    if mime == "text/plain" and data:
+        plain.append(_decode(data))
+    elif mime == "text/html" and data:
+        html.append(_decode(data))
+
+    for part in payload.get("parts", []) or []:
+        _collect_parts(part, plain, html)
+
 
 def _extract_body(payload):
-    """Helper function to extract the email body from the Gmail API payload."""
-    if "parts" in payload:
-        for part in payload["parts"]:
-            if part["mimeType"] == "text/plain":
-                return _decode(part["body"]["data"])
-            elif part["mimeType"] == "text/html":
-                return _strip_html(_decode(part["body"]["data"]))
-    elif "body" in payload and "data" in payload["body"]:
-        return _decode(payload["body"]["data"])
-    return ""
+    """Returns the email body as plain text. Prefers text/plain, falls back
+    to stripped text/html, then to the payload's own body."""
+    plain, html = [], []
+    _collect_parts(payload, plain, html)
+
+    if plain and any(p.strip() for p in plain):
+        return "\n".join(plain).strip()
+    if html:
+        return _strip_html("\n".join(html))
+
+    data = payload.get("body", {}).get("data")
+    return _decode(data).strip() if data else ""
 
 
-def fetch_recent_emails(service, query, max_results):
-    response = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+def parse_message(message):
+    """Converts a raw Gmail API message into the simple dict the rest of the
+    app uses."""
+    payload = message.get("payload", {})
+    headers = payload.get("headers", [])
+    return {
+        "id": message["id"],
+        "thread_id": message.get("threadId"),
+        "sender": _get_header(headers, "From"),
+        "subject": _get_header(headers, "Subject"),
+        "date": _get_header(headers, "Date"),
+        "snippet": html_lib.unescape(message.get("snippet", "")),
+        "label_ids": message.get("labelIds", []),
+        "body": _extract_body(payload),
+    }
 
-    message_refs = response.get("messages", [])
-    emails = []
 
-    for ref in message_refs:
-        message = _get_message_with_retry(service, ref["id"])
-        headers = message["payload"].get("headers", [])
-        emails.append(
-            {
-                "id": message["id"],
-                "sender": _get_header(headers, "From"),
-                "subject": _get_header(headers, "Subject"),
-                "body": _extract_body(message["payload"]),
-            }
-        )
-        time.sleep(0.5)
+# ---------------------------------------------------------------------------
+# API calls with retry
+# ---------------------------------------------------------------------------
 
-    return emails
+def _is_retryable(error):
+    status = getattr(error.resp, "status", None)
+    if status in (500, 502, 503, 504):
+        return True
+    return status in (403, 429) and any(r in str(error) for r in _RETRYABLE_REASONS)
 
-_label_id_cache = {}
 
-def _get_message_with_retry(service, message_id, max_attempts=7):
-    """Fetches a single message, retrying with exponential backoff if Gmail
-    rate-limits us (HTTP 403/429 rateLimitExceeded). Backoff is capped at 60s
-    so it can survive a full per-minute quota window."""
+def _execute_with_retry(request_fn, max_attempts=7):
+    """Runs `request_fn()` (which must build and .execute() a request),
+    retrying with exponential backoff on rate limits / transient server
+    errors. Backoff is capped at 60s so it can survive a full per-minute
+    quota window."""
     for attempt in range(max_attempts):
         try:
-            return (
-                service.users()
-                .messages()
-                .get(userId="me", id=message_id, format="full")
-                .execute()
-            )
+            return request_fn()
         except HttpError as e:
-            is_rate_limit = e.resp.status in (403, 429) and "rateLimitExceeded" in str(e)
-            if is_rate_limit and attempt < max_attempts - 1:
+            if _is_retryable(e) and attempt < max_attempts - 1:
                 wait_time = min(2 ** attempt, 60)
-                print(f"Rate limited, retrying in {wait_time}s (attempt {attempt + 1}/{max_attempts})...")
+                print(f"Gmail API busy, retrying in {wait_time}s (attempt {attempt + 1}/{max_attempts})...")
                 time.sleep(wait_time)
             else:
                 raise
 
-def _get_or_create_label(service, label_name):
+
+def _get_message_with_retry(service, message_id, max_attempts=7):
+    return _execute_with_retry(
+        lambda: service.users().messages().get(userId="me", id=message_id, format="full").execute(),
+        max_attempts=max_attempts,
+    )
+
+
+def list_message_ids(service, query, max_results):
+    """Returns up to `max_results` message ids matching `query`, following
+    pagination (the API returns at most 500 per page)."""
+    ids, page_token = [], None
+    while len(ids) < max_results:
+        page_size = min(500, max_results - len(ids))
+        response = _execute_with_retry(
+            lambda: service.users()
+            .messages()
+            .list(userId="me", q=query, maxResults=page_size, pageToken=page_token)
+            .execute()
+        )
+        ids.extend(m["id"] for m in response.get("messages", []))
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    return ids[:max_results]
+
+
+def fetch_recent_emails(service, query="in:inbox", max_results=50, delay_seconds=0.2):
+    """Fetches and parses up to `max_results` emails matching `query`."""
+    emails = []
+    for message_id in list_message_ids(service, query, max_results):
+        message = _get_message_with_retry(service, message_id)
+        emails.append(parse_message(message))
+        if delay_seconds:
+            time.sleep(delay_seconds)
+    return emails
+
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+
+def get_or_create_label(service, label_name):
+    """Returns the id of Gmail label `label_name`, creating it if needed.
+    Names containing "/" become nested labels (e.g. AI/Orders)."""
     if label_name in _label_id_cache:
         return _label_id_cache[label_name]
 
-    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    labels = _execute_with_retry(
+        lambda: service.users().labels().list(userId="me").execute()
+    ).get("labels", [])
     for label in labels:
-        if label["name"] == label_name:
-            _label_id_cache[label_name] = label["id"]
-            return label["id"]
+        _label_id_cache[label["name"]] = label["id"]
+    if label_name in _label_id_cache:
+        return _label_id_cache[label_name]
 
-    created = (
-        service.users()
+    created = _execute_with_retry(
+        lambda: service.users()
         .labels()
         .create(
             userId="me",
@@ -103,14 +191,20 @@ def _get_or_create_label(service, label_name):
     return created["id"]
 
 
+# Kept for backwards compatibility with older imports.
+_get_or_create_label = get_or_create_label
+
+
+def modify_labels(service, message_id, add=None, remove=None):
+    body = {"addLabelIds": list(add or []), "removeLabelIds": list(remove or [])}
+    _execute_with_retry(
+        lambda: service.users().messages().modify(userId="me", id=message_id, body=body).execute()
+    )
+
+
 def apply_label(service, message_id, label_name):
-    label_id = _get_or_create_label(service, label_name)
-    service.users().messages().modify(
-        userId="me", id=message_id, body={"addLabelIds": [label_id]}
-    ).execute()
+    modify_labels(service, message_id, add=[get_or_create_label(service, label_name)])
 
 
 def archive_message(service, message_id):
-    service.users().messages().modify(
-        userId="me", id=message_id, body={"removeLabelIds": ["INBOX"]}
-    ).execute()
+    modify_labels(service, message_id, remove=["INBOX"])

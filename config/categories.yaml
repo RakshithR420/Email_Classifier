@@ -1,12 +1,16 @@
-Phishing: "Suspicious or malicious emails attempting to steal credentials, financial information, personal data, or gain unauthorized access."
-Job Search: "Emails related to job opportunities, recruiter outreach, interview invitations, job alerts, career fairs, or professional networking."
-Applications: "Emails related to applications the user has submitted, such as job applications, university applications, memberships, services, or other application processes."
-Orders: "Emails related to purchases and orders, including order confirmations, shipping updates, delivery notifications, cancellations, returns, and refunds."
-Subscriptions: "Emails related to recurring subscriptions or services, including subscription confirmations, renewals, cancellations, billing reminders, and service updates."
-Personal: "Personal communications from friends, family, acquaintances, or other individuals that are not primarily related to business, finance, shopping, or job searching."
-Finance: "Emails related to banking, credit cards, payments, transactions, invoices, investments, insurance, loans, taxes, or other financial matters."
-Promotions: "Marketing and promotional emails advertising products, services, discounts, sales, offers, newsletters, or promotional campaigns."
-Other: "Legitimate emails that do not clearly fit into any of the other categories."
-Job Result: "Emails related to the results of job applications, interviews, or assessments, including acceptance, rejection, feedback, or next steps."
-Social Media: "Emails related to social media platforms, including notifications, friend requests, messages, updates, and activity alerts."
-OTP: "Emails containing one-time passwords (OTPs) or verification codes for account authentication, password resets, or secure transactions."
+# Each category is "Name: description". The description is shown to the model,
+# so write it the way you'd explain the category to a person.
+# If you add a category here, also add it to actions.yaml.
+
+Phishing: "Malicious or fraudulent emails trying to steal passwords, money or personal data: fake security alerts, fake invoices or prizes, urgent threats, requests to 'verify' an account through a link, or senders pretending to be a known company from an odd domain."
+Job Search: "Job opportunities and recruiting: job alerts and recommended jobs, recruiter or HR outreach about a role, interview invitations or scheduling, career fairs, hiring events. Includes LinkedIn/Naukri/Indeed/Glassdoor emails ONLY when they are about specific jobs or roles."
+Applications: "Confirmations and status updates for something the user applied for or registered to: 'we received your application', application in review, university or course applications, memberships, event registrations. Not the final result (that is Job Result)."
+Orders: "Purchases the user made: order confirmations, invoices for a purchase, shipping and delivery updates, cancellations, returns and refunds for orders."
+Subscriptions: "Accounts and recurring services the user already has: subscription or plan renewals, billing reminders for a service, trial ending, terms-of-service or privacy-policy updates, account or product change notices from a service they use. Not marketing for new products (that is Promotions)."
+Personal: "Written by a real person to the user personally: friends, family, classmates, colleagues writing one-to-one. Not automated notifications, even if they mention a person's name."
+Finance: "Banking and money: bank or card statements, transaction and payment alerts, UPI/NEFT/credit alerts, salary credits, investment, mutual fund, insurance, loan or tax emails from a bank or financial institution. Financial marketing offers are Promotions."
+Promotions: "Marketing: sales, discounts, coupons, offers, product launches, newsletters and digests, webinars, 'we miss you' and other bulk advertising emails, including pre-approved loan or credit card offers."
+Other: "Legitimate emails that clearly fit none of the other categories."
+Job Result: "The outcome of a job application, interview or assessment: offer letters, selections, rejections ('we have decided not to move forward'), feedback, shortlisting and next-round results."
+Social Media: "Notifications about the user's social or networking activity: connection or friend requests, 'X accepted your invitation', 'people you may know', profile views, new followers, mentions, comments, likes, messages and activity digests from LinkedIn, Facebook, Instagram, X/Twitter, GitHub social activity, etc. LinkedIn networking notifications belong HERE, not in Job Search."
+OTP: "One-time passwords and verification codes: login codes, 2-step verification, password reset codes or links, email address verification."

@@ -1,8 +1,18 @@
+# Core (running the agent)
 torch
-transformers
+transformers>=4.51  # Qwen3 support
 accelerate
 bitsandbytes
+peft                # only needed if you use a fine-tuned adapter
 pyyaml
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+
+# Evaluation
+pandas
+scikit-learn
+tqdm
+
+# Tests
+pytest

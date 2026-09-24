@@ -1,21 +1,23 @@
+"""Builds eval/data/phishing_test.csv — a balanced 150-row sample of the
+Kaggle "Phishing Email" dataset. Download Phishing_Email.csv from Kaggle
+into eval/data/ first."""
 import pandas as pd
 
-df = pd.read_csv("eval/data/Phishing_Email.csv")
+from _paths import PHISHING_RAW, PHISHING_TEST
 
-# Keep it manageable — sample 150 rows total (balanced-ish) instead of using the whole dataset
+SAMPLES_PER_CLASS = 75
+
+df = pd.read_csv(PHISHING_RAW)
 df = df.dropna(subset=["Email Text", "Email Type"])
-df = df.groupby("Email Type").apply(lambda x: x.sample(min(len(x), 75), random_state=42))
-df = df.reset_index(level=0).reset_index(drop=True)
+df = df.groupby("Email Type", group_keys=False).apply(
+    lambda x: x.sample(min(len(x), SAMPLES_PER_CLASS), random_state=42)
+).reset_index(drop=True)
 
-rows = []
-for _, row in df.iterrows():
-    rows.append({
-        "subject": "",  # this dataset has no separate subject field
-        "sender": "",   # or sender field — leave blank, classify_email() handles empty strings fine
-        "body": str(row["Email Text"])[:2000],
-        "true_label": "Phishing" if row["Email Type"] == "Phishing Email" else "Not Phishing",
-    })
-
-out = pd.DataFrame(rows)
-out.to_csv("eval/data/phishing_test.csv", index=False)
-print(f"Wrote {len(out)} rows to eval/data/phishing_test.csv")
+out = pd.DataFrame({
+    "subject": "",  # this dataset has no separate subject field
+    "sender": "",   # or sender field — classify_email() handles empty strings fine
+    "body": df["Email Text"].astype(str).str[:2000],
+    "true_label": ["Phishing" if t == "Phishing Email" else "Not Phishing" for t in df["Email Type"]],
+})
+out.to_csv(PHISHING_TEST, index=False)
+print(f"Wrote {len(out)} rows to {PHISHING_TEST}")

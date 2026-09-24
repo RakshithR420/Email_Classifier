@@ -13,3 +13,12 @@ eval/data/personal_predictions.csv
 
 # Large raw dataset — too big for git, document download instructions in README instead
 eval/data/Phishing_Email.csv
+eval/data/personal_holdout.csv
+
+# Run logs contain real email subjects/senders
+logs/
+
+# Fine-tuned adapters are large and trained on personal data
+finetune/adapters/
+
+.pytest_cache/

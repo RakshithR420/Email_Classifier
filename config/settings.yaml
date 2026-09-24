@@ -4,8 +4,33 @@ model:
   bnb_4bit_quant_type: "nf4"
   bnb_4bit_use_double_quant: true
   max_new_tokens: 150
-  temperature: 0.1
+  # 0 = deterministic (greedy) output, which is what you want for classification.
+  temperature: 0.0
+  # Path to a QLoRA adapter produced by finetune/train_qlora.py.
+  # Leave empty ("") to use the base model.
+  adapter_path: ""
+
+fetch:
+  # Gmail search query. "-label:ai-processed" skips emails the agent already handled.
+  query: "in:inbox -label:ai-processed"
+  max_results: 50
+  # How many characters of the email body are sent to the model.
+  body_char_limit: 1000
+
+classify:
+  # Extra attempts when the model returns broken JSON or an unknown category.
+  max_retries: 2
+  # Below this confidence the agent does NOT take the category's action;
+  # it applies the review label instead so a human can check it.
+  confidence_threshold: 0.6
+  low_confidence_label: "AI/Needs-Review"
 
 run:
-  dry_run: false
-
+  # true = only print what would happen. Nothing in Gmail changes.
+  # You can also override this per run: python main.py --live
+  dry_run: true
+  # Label added to every email the agent has handled (live runs only),
+  # so the next run skips it. Set to "" to disable.
+  processed_label: "AI/Processed"
+  # Every run writes a CSV of its decisions here.
+  log_dir: "logs"

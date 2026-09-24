@@ -8,12 +8,38 @@ Most "email classifier" projects call a hosted LLM API and stop there. This one 
 
 ## How it works
 
-1. **Authenticate** with Gmail via OAuth2 (`auth/gmail_auth.py`).
-2. **Fetch** recent inbox emails via the Gmail API, with rate-limit-aware retry/backoff (`auth/gmail_client.py`).
-3. **Classify** each email by prompting a locally-loaded, 4-bit quantized Qwen3-8B model with the email content plus category descriptions, requesting structured JSON output (`classifier/classifier.py`).
-4. **Act** on the result — apply a Gmail label, archive, or do nothing — based on a per-category config (`actions/actions.py`, `config/actions.yaml`).
+1. **Authenticate** with Gmail via OAuth2 (`auth/gmail_auth.py`). Expired or revoked tokens trigger a fresh consent flow automatically.
+2. **Fetch** inbox emails via the Gmail API, with pagination and rate-limit-aware retry/backoff, and parse nested MIME emails (plain text preferred, HTML stripped) (`auth/gmail_client.py`).
+3. **Classify** each email by prompting a locally-loaded, 4-bit quantized Qwen3-8B model with the email plus category descriptions and disambiguation rules, requesting structured JSON (`classifier/classifier.py`).
+   - **Retry on malformed output**: if the reply is not valid JSON or names an unknown category, the model is shown its mistake and asked again (`classify.max_retries`). JSON wrapped in code fences or extra text is still recovered.
+   - If every attempt fails, the email falls back to `Other` with `valid=False`, and the agent does not act on it.
+4. **Decide & act** (`actions/actions.py`, `config/actions.yaml`):
+   - **Confidence gating**: below `classify.confidence_threshold` the category's action is *not* performed. The email only gets the `AI/Needs-Review` label, so nothing is archived on a guess.
+   - Otherwise apply the category's action: `label`, `archive` (label + remove from inbox) or `none`.
+   - Handled emails get an `AI/Processed` label and the default query skips them, so re-running never processes the same email twice.
+5. **Log** every decision to `logs/run_<timestamp>.csv` and print a summary.
 
-Everything is orchestrated by `main.py`, which runs in `dry_run` mode by default (see `config/settings.yaml`) so nothing is changed in your inbox until you're ready.
+Everything is orchestrated by `main.py`. It runs in **dry-run mode by default** (`run.dry_run: true` in `config/settings.yaml`): it prints what it *would* do and changes nothing in Gmail.
+
+## Usage
+
+```
+python main.py                     # dry run with settings.yaml
+python main.py --max 10            # only 10 emails
+python main.py --live              # actually label / archive in Gmail
+python main.py --query "in:inbox newer_than:2d"
+```
+
+Key settings in `config/settings.yaml`:
+
+| Setting | What it does |
+|---|---|
+| `fetch.query` / `fetch.max_results` | Which emails to look at |
+| `fetch.body_char_limit` | How much of the body the model sees |
+| `classify.max_retries` | Extra attempts on malformed output |
+| `classify.confidence_threshold` | Minimum confidence before acting |
+| `run.dry_run` | `true` = change nothing (override with `--live`) |
+| `model.adapter_path` | Load a fine-tuned QLoRA adapter |
 
 ## Categories
 
@@ -29,18 +55,41 @@ This project includes a real accuracy evaluation, not just anecdotal testing —
 Run the evaluation yourself with:
 
 ```
-python eval/evaluate.py
+python eval/evaluate.py                    # both benchmarks
+python eval/evaluate.py --only personal    # just your inbox
 ```
 
-For a per-row breakdown of misclassifications:
+It prints a classification report and a confusion matrix for each benchmark and saves per-row predictions to `eval/data/`. For a breakdown of the misclassifications (most common true→predicted mix-ups first):
 
 ```
 python eval/error_analysis.py
 ```
 
+> The numbers above were measured **before** the sharper category descriptions, disambiguation rules and retry logic were added. Re-run `eval/evaluate.py` and add a "Run 3" section to `eval/results.md` to measure the improvement.
+
 ### Known limitation
 
 The model shows strong precision but weak recall (0.12) on the `Social Media` category — specifically, it systematically misclassifies LinkedIn networking notifications (connection requests, "X accepted your invitation," "you may know") as `Job Search`, likely because it over-weights the sender domain rather than the actual content type. This is documented in `eval/results.md` along with other category-boundary ambiguities found during error analysis (e.g. Facebook notifications overlapping with the `Personal` category, and financial newsletters overlapping with `Promotions`).
+
+The category descriptions in `config/categories.yaml` and the rules in the prompt now address these directly: classify by *content* rather than sender, LinkedIn networking notifications are `Social Media`, and financial marketing is `Promotions`. Whether this closes the gap still needs to be measured.
+
+## Fine-tuning (QLoRA)
+
+`finetune/train_qlora.py` fine-tunes small LoRA adapters on top of the 4-bit base model using your hand-labeled emails:
+
+1. Splits `eval/data/personal_test.csv` into train and a **held-out test set** (stratified, saved to `eval/data/personal_holdout.csv`), so the fine-tuned model is always measured on emails it never saw.
+2. Builds training examples with the **same prompt** the classifier uses at inference time; only the JSON answer tokens are trained.
+3. Trains with QLoRA (4-bit NF4 base + LoRA r=16 on all attention/MLP projections) and saves the adapter to `finetune/adapters/qwen3-8b-email/`.
+
+```
+python finetune/train_qlora.py                 # needs a CUDA GPU (~10-12 GB VRAM)
+# then set  model.adapter_path: "finetune/adapters/qwen3-8b-email"  in settings.yaml
+python eval/evaluate.py --only personal --personal-file eval/data/personal_holdout.csv
+```
+
+To compare fairly, evaluate the base model on the same holdout file first (with `adapter_path: ""`).
+
+Note: training targets use a fixed confidence of 0.9, so after fine-tuning the model's confidence is less informative. Invalid answers are still gated, but consider a lower `confidence_threshold` for the fine-tuned model.
 
 ## Setup
 
@@ -52,25 +101,38 @@ The model shows strong precision but weak recall (0.12) on the `Social Media` ca
    pip install -r requirements.txt
    ```
 3. Run `python main.py` — the first run will open a browser for Gmail OAuth consent and cache the token locally (`auth/token.pickle`, also gitignored).
-4. Review `config/settings.yaml` — `dry_run: true` by default. Flip to `false` only once you've reviewed the classification behavior.
+4. Review the dry-run output and the CSV in `logs/`. When you're happy, run `python main.py --live` (or set `run.dry_run: false`).
+
+## Tests
+
+Unit tests cover MIME parsing, pagination, JSON parsing/retry, confidence gating, dry-run safety and fine-tuning data prep. They run without a GPU or Gmail access:
+
+```
+pytest
+```
 
 ## Project structure
 
 ```
-main.py                        # orchestration entrypoint
+main.py                        # orchestration entrypoint (CLI)
 auth/                          # OAuth flow + Gmail API client
-classifier/                    # model loading + classification logic
-actions/                       # decide-and-act logic
+classifier/                    # model loading, prompt, JSON parsing + retry
+actions/                       # confidence gating + decide-and-act logic
 config/                        # categories.yaml, actions.yaml, settings.yaml
 eval/                          # accuracy evaluation pipeline + results.md
+finetune/                      # QLoRA fine-tuning on labeled emails
+tests/                         # unit tests (pytest)
+logs/                          # per-run decision logs (gitignored)
 ```
 
 ## Tech stack
 
-Python, Hugging Face Transformers + BitsAndBytes (4-bit quantization), Gmail API, scikit-learn (evaluation metrics).
+Python, Hugging Face Transformers + BitsAndBytes (4-bit quantization), PEFT (QLoRA), Gmail API, scikit-learn (evaluation metrics), pytest.
 
 ## Roadmap
 
-- Confidence gating and retry-on-malformed-JSON for more robust agentic behavior
-- QLoRA fine-tuning on the evaluation data to improve accuracy on ambiguous categories
-- Sharper category descriptions to reduce Social Media / Job Search confusion
+- [x] Confidence gating and retry-on-malformed-JSON for more robust agentic behavior
+- [x] QLoRA fine-tuning on the evaluation data to improve accuracy on ambiguous categories
+- [x] Sharper category descriptions to reduce Social Media / Job Search confusion
+- [ ] Re-run the evaluation (base vs. fine-tuned on the held-out set) and record it as Run 3 in `eval/results.md`
+- [ ] Schedule `main.py --live` to run automatically (e.g. Windows Task Scheduler)

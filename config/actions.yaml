@@ -1,3 +1,9 @@
+# What the agent does for each category.
+#   action: "label"   -> add the Gmail label
+#   action: "archive" -> add the label (if given) and remove the email from the inbox
+#   action: "none"    -> leave the email alone
+# Every category in categories.yaml should have an entry here.
+
 Phishing:
   action: "label"
   label: "AI/Phishing-Review"
