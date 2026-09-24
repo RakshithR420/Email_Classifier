@@ -89,6 +89,8 @@ python eval/evaluate.py --only personal --personal-file eval/data/personal_holdo
 
 To compare fairly, evaluate the base model on the same holdout file first (with `adapter_path: ""`).
 
+**No local GPU?** Open `notebooks/colab_eval_finetune.ipynb` in Google Colab (free T4 GPU). It runs the full evaluation, the QLoRA training and the base-vs-fine-tuned comparison, then downloads the results.
+
 Note: training targets use a fixed confidence of 0.9, so after fine-tuning the model's confidence is less informative. Invalid answers are still gated, but consider a lower `confidence_threshold` for the fine-tuned model.
 
 ## Setup

@@ -106,14 +106,15 @@ def main():
         return {k: torch.tensor(v) for k, v in out.items()}
 
     # 4. model + LoRA ---------------------------------------------------------
-    compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    # bf16 only on Ampere or newer (RTX 30xx+, A100...). T4 / older GPUs use fp16.
+    compute_dtype = torch.bfloat16 if torch.cuda.get_device_capability(0)[0] >= 8 else torch.float16
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=compute_dtype,
         bnb_4bit_use_double_quant=True,
     )
-    model = AutoModelForCausalLM.from_pretrained(model_cfg["name"], quantization_config=bnb, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(model_cfg["name"], quantization_config=bnb, device_map={"": 0})
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     model = get_peft_model(model, LoraConfig(
         r=args.lora_r,
@@ -125,6 +126,10 @@ def main():
     ))
     model.print_trainable_parameters()
 
+    import math
+    steps_per_epoch = math.ceil(len(examples) / (args.batch_size * args.grad_accum))
+    warmup_steps = max(1, int(0.05 * steps_per_epoch * args.epochs))
+
     training_args = TrainingArguments(
         output_dir=os.path.join(args.output, "checkpoints"),
         num_train_epochs=args.epochs,
@@ -132,7 +137,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
+        warmup_steps=warmup_steps,
         logging_steps=5,
         save_strategy="no",
         bf16=compute_dtype == torch.bfloat16,
